@@ -1,0 +1,12 @@
+{
+    "servers": {
+      "Mintlify": {
+        "type": "http",
+        "url": "https://mintlify.com/docs/mcp"
+      },
+      "docs-langchain": {
+        "type": "http",
+        "url": "https://docs.langchain.com/mcp"
+      }
+    }
+  }
