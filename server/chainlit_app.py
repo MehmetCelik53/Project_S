@@ -11,9 +11,9 @@ load_dotenv()
 
 # Local LLM client (OpenAI-compatible API)
 llm_client = AsyncOpenAI(
-    base_url="http://localhost:11434/v1",  # Ollama için
-    # base_url="http://localhost:1234/v1",  # LM Studio için
-    api_key="not-needed"  # Lokal LLM için API key gerekmez
+    base_url="http://localhost:11434/v1",  # Ollama 
+    # base_url="http://localhost:1234/v1",  # LM Studio 
+    api_key="not-needed"  # no need for API key for local LLM
 )
 
 # Create server parameters for stdio connection
@@ -29,8 +29,10 @@ STRICT RULES:
 1. ALWAYS use tools - NEVER just show code
 2. Do EXACTLY what the user asks - no suggestions, no questions, no extra features
 3. Keep responses SHORT - just confirm what was done
+4. When user asks about databases, ALWAYS use list_databases() tool first
 
 Available operations:
+- "how many databases" or "list databases" -> use list_databases tool
 - "create database X" -> use create_database tool
 - "switch to database X" -> use switch_database tool
 - "create table X" -> use query_data with CREATE TABLE (id INTEGER PRIMARY KEY, name TEXT)
@@ -59,11 +61,11 @@ async def start():
         cl.user_session.set("messages", [])
         
         await cl.Message(
-            content="🗄️ **SQLite Assistant Ready!**\n\nBen SQL sorgularını çalıştırabilen bir asistanım. Veritabanınızla ilgili sorularınızı sorabilirsiniz."
+            content="**SQLite Assistant Ready!**\n\nBen SQL sorgularınızı çalıştırabilen bir asistanım. Veritabanınızla ilgili sorularınızı sorabilirsiniz."
         ).send()
     except Exception as e:
         await cl.Message(
-            content=f"❌ **Error starting MCP session:** {str(e)}\n\nLütfen MCP server'ın çalıştığından emin olun."
+            content=f"**Error starting MCP session:** {str(e)}\n\nLütfen MCP server'ının çalıştığından emin olun."
         ).send()
 
 
@@ -76,7 +78,7 @@ async def main(message: cl.Message):
     # Check if session is properly initialized
     if not session or messages is None:
         await cl.Message(
-            content="❌ Session not initialized. Please refresh the page."
+            content="Session not initialized. Please refresh the page."
         ).send()
         return
     
@@ -133,7 +135,7 @@ async def main(message: cl.Message):
     # Handle tool calls
     if assistant_message.tool_calls:
         # Show that we're executing tools
-        tool_msg = cl.Message(content="🔧 **Executing SQL Query...**")
+        tool_msg = cl.Message(content="**Executing SQL Query...**")
         await tool_msg.send()
         
         # Add assistant message with tool calls to history
@@ -221,4 +223,3 @@ async def end():
             await stdio_ctx.__aexit__(None, None, None)
     except Exception as e:
         print(f"Error during cleanup: {e}")
-
