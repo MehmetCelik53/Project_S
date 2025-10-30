@@ -1,0 +1,45 @@
+{
+    "common": {
+        "actions": {
+            "cancel": "Vazgeç",
+            "confirm": "Onayla",
+            "continue": "Devam Et",
+            "goBack": "Geri Dön",
+            "reset": "Sıfırla",
+            "submit": "Gönder"
+        },
+        "status": {
+            "loading": "Yükleniyor...",
+            "error": {
+                "default": "Bir hata oluştu",
+                "serverConnection": "Sunucuya bağlanılamadı"
+            }
+        }
+    },
+    "auth": {
+        "login": {
+            "title": "Uygulamaya erişmek için giriş yap",
+            "form": {
+                "email": {
+                    "label": "E-posta adresi",
+                    "required": "E-posta zorunlu bir alandır",
+                    "placeholder": "ben@ornek.com"
+                },
+                "password": {
+                    "label": "Şifre",
+                    "required": "Şifre zorunlu bir alandır"
+                },
+                "actions": {
+                    "signin": "Giriş Yap"
+                },
+                "alternativeText": {
+                    "or": "VEYA"
+                }
+            },
+            "errors": {
+                "default": "Giriş yapılamadı",
+                "signin": "Farklı bir hesapla giriş yapmayı dene"
+            }
+        }
+    }
+}
