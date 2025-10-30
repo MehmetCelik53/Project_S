@@ -1,50 +1,50 @@
+"""
+Chainlit SQL Agent Interface
+Integrates LangGraph workflow with Chainlit UI and MCP tools
+"""
+
 import json
 from typing import Any
 
 import chainlit as cl
-from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import AsyncOpenAI
 
-load_dotenv()
+# Import the SQL agent workflow
+import sys
+sys.path.insert(0, '.')
+from nodes.workflow import sql_agent
+from nodes.state_schemas import create_initial_state
 
 # Local LLM client (OpenAI-compatible API)
 llm_client = AsyncOpenAI(
-    base_url="http://localhost:11434/v1",  # Ollama için
-    # base_url="http://localhost:1234/v1",  # LM Studio için
-    api_key="not-needed"  # Lokal LLM için API key gerekmez
+    base_url="http://localhost:11434/v1",
+    api_key="not-needed"
 )
 
-# Create server parameters for stdio connection
+# Create server parameters for MCP stdio connection
 server_params = StdioServerParameters(
-    command="python",  # Executable
-    args=["server/mcp_server.py"],  # Optional command line arguments
-    env=None,  # Optional environment variables
+    command="python",
+    args=["server/mcp_server.py"],
+    env=None,
 )
 
-SYSTEM_PROMPT = """You are a SQLite assistant. Execute commands EXACTLY as requested, nothing more.
+SYSTEM_PROMPT = """You are a SQLite assistant. Execute commands EXACTLY as requested.
 
 STRICT RULES:
-1. ALWAYS use tools - NEVER just show code
-2. Do EXACTLY what the user asks - no suggestions, no questions, no extra features
-3. Keep responses SHORT - just confirm what was done
-
-Available operations:
-- "create database X" -> use create_database tool
-- "switch to database X" -> use switch_database tool
-- "create table X" -> use query_data with CREATE TABLE (id INTEGER PRIMARY KEY, name TEXT)
-- "add/insert X" -> use query_data with INSERT
-- "show/list/select" -> use query_data with SELECT
-
-Do the task. Nothing else."""
+1. Use available tools (list_databases, switch_database, create_database, query_data)
+2. Do EXACTLY what the user asks
+3. Keep responses SHORT
+4. When in doubt, use list_databases() first
+"""
 
 
 @cl.on_chat_start
 async def start():
-    """Initialize MCP session when chat starts"""
+    """Initialize MCP session and workflow state when chat starts"""
     try:
-        # Start MCP server connection
+        # Initialize MCP server connection
         stdio_ctx = stdio_client(server_params)
         read, write = await stdio_ctx.__aenter__()
         
@@ -52,159 +52,140 @@ async def start():
         session = await session_ctx.__aenter__()
         await session.initialize()
         
-        # Store session and contexts in user session
+        # Store session in user session
         cl.user_session.set("mcp_session", session)
         cl.user_session.set("stdio_ctx", stdio_ctx)
         cl.user_session.set("session_ctx", session_ctx)
-        cl.user_session.set("messages", [])
+        
+        # Initialize workflow state
+        initial_state = create_initial_state(
+            user_id=cl.user_session.get("id", "user_1"),
+            user_name="SQL User",
+            db_path="./databases/sql_agent.db"
+        )
+        cl.user_session.set("workflow_state", initial_state)
         
         await cl.Message(
-            content="4dce0f **SQLite Assistant Ready!**\n\nBen SQL sorgular31n31 3al315ft31rabilen bir asistan31m. Veritaban31n31zla ilgili sorular31n31z31 sorabilirsiniz."
+            content="**SQL Agent Ready!** 🚀\n\nI'm ready to help you with SQL queries. Ask me anything about your database!"
         ).send()
+        
     except Exception as e:
         await cl.Message(
-            content=f"74c **Error starting MCP session:** {str(e)}\n\nL3ftfen MCP server'31n 3al315ft311dan emin olun."
+            content=f"⚠️ Error starting: {str(e)}\n\nMake sure MCP server is running: `python server/mcp_server.py`"
         ).send()
 
 
 @cl.on_message
 async def main(message: cl.Message):
-    """Handle incoming messages"""
-    session: ClientSession = cl.user_session.get("mcp_session")
-    messages: list[dict[str, Any]] = cl.user_session.get("messages")
+    """Handle incoming user messages and run workflow"""
     
-    # Check if session is properly initialized
-    if not session or messages is None:
+    # Get workflow state and MCP session
+    workflow_state = cl.user_session.get("workflow_state")
+    session: ClientSession = cl.user_session.get("mcp_session")
+    
+    if not workflow_state or not session:
         await cl.Message(
-            content="74c Session not initialized. Please refresh the page."
+            content="❌ Session not initialized. Please refresh the page."
         ).send()
         return
     
-    # Add user message to history
-    messages.append({
-        "role": "user",
-        "content": message.content
-    })
-    
-    # Get available tools from MCP server
-    response = await session.list_tools()
-    available_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description or "",
-                "parameters": tool.inputSchema,
-            }
-        }
-        for tool in response.tools
-    ]
-    
-    # Debug: Show available tools
-    print(f"Available tools: {[t['function']['name'] for t in available_tools]}")
-    
-    # Create a message for streaming response
-    msg = cl.Message(content="")
-    await msg.send()
-    
-    # Initial LLM API call
-    res = await llm_client.chat.completions.create(
-        model="gpt-oss:20b",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *messages
-        ],
-        tools=available_tools,
-        tool_choice="auto",
-    )
-    
-    assistant_message = res.choices[0].message
-    
-    # Handle text response
-    if assistant_message.content:
-        msg.content = assistant_message.content
-        await msg.update()
+    try:
+        # Update state with user input
+        workflow_state["current_input"] = message.content
         
-        messages.append({
-            "role": "assistant",
-            "content": assistant_message.content
-        })
-    
-    # Handle tool calls
-    if assistant_message.tool_calls:
-        # Show that we're executing tools
-        tool_msg = cl.Message(content="527 **Executing SQL Query...**")
-        await tool_msg.send()
+        # Show thinking message
+        thinking_msg = cl.Message(content="🤔 Processing your request...")
+        await thinking_msg.send()
         
-        # Add assistant message with tool calls to history
-        messages.append({
-            "role": "assistant",
-            "content": assistant_message.content,
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments
-                    }
-                }
-                for tc in assistant_message.tool_calls
-            ]
-        })
+        # Run the workflow through classify_intent to generate SQL
+        result_state = sql_agent.invoke(
+            workflow_state,
+            config={"configurable": {"thread_id": "default"}}
+        )
         
-        for tool_call in assistant_message.tool_calls:
-            tool_name = tool_call.function.name
-            tool_args = json.loads(tool_call.function.arguments)
-            
-            # Show the SQL query being executed
-            if "sql" in tool_args:
-                await cl.Message(
-                    content=f"```sql\n{tool_args['sql']}\n```",
-                    author="SQL Query"
-                ).send()
-
-            # Execute tool call via MCP
-            result = await session.call_tool(tool_name, tool_args)
-            tool_result = getattr(result.content[0], "text", "")
-            
-            # Show tool result
+        # Get the SQL query from workflow
+        sql_query = result_state.get("sql_query", "")
+        
+        if not sql_query:
             await cl.Message(
-                content=f"**Result:**\n```\n{tool_result}\n```",
-                author="Database"
+                content="❌ Failed to generate SQL query from your request."
             ).send()
-            
-            # Add tool result to messages
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": tool_result,
-            })
+            return
         
-        # Get next response from LLM with tool results
-        res = await llm_client.chat.completions.create(
+        # Show the SQL query
+        await cl.Message(
+            content=f"📝 **SQL Query:**\n```sql\n{sql_query}\n```",
+            author="Workflow"
+        ).send()
+        
+        # Get available MCP tools
+        tools_response = await session.list_tools()
+        available_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "parameters": tool.inputSchema,
+                }
+            }
+            for tool in tools_response.tools
+        ]
+        
+        # Call LLM with tools to execute the SQL
+        llm_response = await llm_client.chat.completions.create(
             model="gpt-oss:20b",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                *messages
+                {"role": "user", "content": f"Execute this SQL query: {sql_query}"}
             ],
             tools=available_tools,
+            tool_choice="auto",
         )
         
-        final_response = res.choices[0].message.content
-        if final_response:
-            messages.append({
-                "role": "assistant",
-                "content": final_response
-            })
-            
-            # Send final response
+        assistant_message = llm_response.choices[0].message
+        
+        # Handle tool calls from LLM
+        if assistant_message.tool_calls:
+            for tool_call in assistant_message.tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+                
+                # Execute tool via MCP
+                result = await session.call_tool(tool_name, tool_args)
+                tool_result = getattr(result.content[0], "text", "")
+                
+                # Store result in workflow state
+                result_state["sql_result"] = tool_result
+                
+                # Show result
+                await cl.Message(
+                    content=f"💾 **Result:**\n```\n{tool_result}\n```",
+                    author="Database"
+                ).send()
+        
+        # Run final node to generate friendly response
+        final_state = sql_agent.invoke(
+            result_state,
+            config={"configurable": {"thread_id": "default"}}
+        )
+        
+        # Get the generated response from messages
+        final_messages = final_state.get("messages", [])
+        if final_messages:
+            last_response = final_messages[-1].get("content", "Query completed.")
             await cl.Message(
-                content=final_response
+                content=f"✅ **Response:**\n{last_response}",
+                author="Assistant"
             ).send()
-    
-    # Update session
-    cl.user_session.set("messages", messages)
+        
+        # Update session state
+        cl.user_session.set("workflow_state", final_state)
+        
+    except Exception as e:
+        await cl.Message(
+            content=f"❌ Error: {str(e)}"
+        ).send()
 
 
 @cl.on_chat_end
@@ -221,4 +202,3 @@ async def end():
             await stdio_ctx.__aexit__(None, None, None)
     except Exception as e:
         print(f"Error during cleanup: {e}")
-
