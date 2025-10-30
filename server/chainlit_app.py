@@ -59,11 +59,11 @@ async def start():
         cl.user_session.set("messages", [])
         
         await cl.Message(
-            content="4dce0f **SQLite Assistant Ready!**\n\nBen SQL sorgular31n31 3al315ft31rabilen bir asistan31m. Veritaban31n31zla ilgili sorular31n31z31 sorabilirsiniz."
+            content="🗄️ **SQLite Assistant Ready!**\n\nBen SQL sorgularını çalıştırabilen bir asistanım. Veritabanınızla ilgili sorularınızı sorabilirsiniz."
         ).send()
     except Exception as e:
         await cl.Message(
-            content=f"74c **Error starting MCP session:** {str(e)}\n\nL3ftfen MCP server'31n 3al315ft311dan emin olun."
+            content=f"❌ **Error starting MCP session:** {str(e)}\n\nLütfen MCP server'ın çalıştığından emin olun."
         ).send()
 
 
@@ -76,7 +76,7 @@ async def main(message: cl.Message):
     # Check if session is properly initialized
     if not session or messages is None:
         await cl.Message(
-            content="74c Session not initialized. Please refresh the page."
+            content="❌ Session not initialized. Please refresh the page."
         ).send()
         return
     
@@ -133,7 +133,7 @@ async def main(message: cl.Message):
     # Handle tool calls
     if assistant_message.tool_calls:
         # Show that we're executing tools
-        tool_msg = cl.Message(content="527 **Executing SQL Query...**")
+        tool_msg = cl.Message(content="🔧 **Executing SQL Query...**")
         await tool_msg.send()
         
         # Add assistant message with tool calls to history
