@@ -133,6 +133,9 @@ class TimeManagementState(TypedDict):
     reasoning: str  # LLM's reasoning for decisions
     next_step: str  # What should happen next
     
+    # User Profile
+    personal_characteristics: dict  # Strengths, challenges, peak hours, etc.
+    
     # Database Operations
     database_path: str  # Path to SQLite database
     is_db_updated: bool  # Flag for database changes
@@ -213,6 +216,7 @@ def create_initial_state(user_id: str, user_name: str, db_path: str = "./databas
         action_taken="",
         reasoning="",
         next_step="",
+        personal_characteristics={},
         database_path=db_path,
         is_db_updated=False,
         sql_query="",

@@ -4,49 +4,111 @@ Handles user input, SQL query execution, and response generation
 """
 
 from langchain_ollama import OllamaLLM
-from .state_schemas import TimeManagementState
+from .state_schemas import TimeManagementState, Goal, Plan
 from datetime import datetime
 import json
 import os
+from langgraph.types import interrupt, Command
 
 
-# Initialize LLM (local Ollama) - fallback to mock if not available
-def get_llm():
-    """Get LLM instance, with fallback to mock"""
+# Initialize LLM (local Ollama)
+llm = OllamaLLM(model="gpt-oss:20b-cloud", temperature=0.1)
+
+# System prompt defining user profile structure
+SYSTEM_PROMPT = """You are a Time Management Assistant. When gathering user profile information, 
+ask comprehensive questions to understand:
+1. User's current situation and challenges
+2. Personal characteristics and strengths
+3. Goals for the next period
+4. Daily schedule preferences
+5. Priorities and values
+
+Be conversational, empathetic, and thorough."""
+
+
+def user_profile_node(state: TimeManagementState) -> TimeManagementState:
+    """
+    Node 0: User Profile Collection with Interrupt Loop
+    Pauses execution and gathers user profile information via interrupt.
+    Collects goals, personal characteristics, and preferences.
+    """
+    # Generate questionnaire using LLM based on system prompt
+    questionnaire_prompt = f"""{SYSTEM_PROMPT}
+
+Based on the above context, generate a structured questionnaire for gathering user profile.
+The questionnaire should have 5-7 key questions to understand the user's goals and characteristics.
+
+Format as JSON with this structure:
+{{
+    "greeting": "Warm greeting message",
+    "questions": [
+        {{"question": "Question 1", "field": "field_name"}},
+        ...
+    ],
+    "summary_instruction": "How to summarize responses"
+}}
+"""
+    
+    questionnaire_json = llm.invoke(questionnaire_prompt)
+    
     try:
-        return OllamaLLM(model="gpt-oss:20b-cloud", temperature=0.1)
-    except:
-        # Fallback to mock LLM for testing
-        class MockLLM:
-            def invoke(self, prompt: str) -> str:
-                # Simple mock responses
-                if "CREATE TABLE" in prompt.upper():
-                    return json.dumps({
-                        "intent": "create",
-                        "sql_query": "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)",
-                        "explanation": "Creating users table"
-                    })
-                elif "INSERT" in prompt.upper():
-                    return json.dumps({
-                        "intent": "insert",
-                        "sql_query": "INSERT INTO users (name, email) VALUES ('John Doe', 'john@example.com')",
-                        "explanation": "Inserting test user"
-                    })
-                elif "SELECT" in prompt.upper() or "SHOW" in prompt.upper():
-                    return json.dumps({
-                        "intent": "select",
-                        "sql_query": "SELECT * FROM sqlite_master WHERE type='table'",
-                        "explanation": "Showing all tables"
-                    })
-                else:
-                    return json.dumps({
-                        "intent": "select",
-                        "sql_query": "SELECT 1",
-                        "explanation": "Default query"
-                    })
-        return MockLLM()
-
-llm = get_llm()
+        questionnaire = json.loads(questionnaire_json)
+    except json.JSONDecodeError:
+        questionnaire = {
+            "greeting": "Welcome! Let's set up your profile.",
+            "questions": [
+                {"question": "What are your main goals for the next month?", "field": "goals"},
+                {"question": "What are your key strengths?", "field": "strengths"},
+                {"question": "What challenges do you face?", "field": "challenges"},
+                {"question": "What times of day are you most productive?", "field": "peak_hours"},
+                {"question": "How many hours per day can you dedicate to work?", "field": "daily_hours"},
+            ]
+        }
+    
+    print(f"\n📋 Questionnaire Generated:\n{questionnaire['greeting']}\n")
+    
+    # Pause execution and wait for user responses via interrupt
+    user_responses = interrupt({
+        "type": "user_profile_questionnaire",
+        "instruction": questionnaire['greeting'],
+        "questions": questionnaire["questions"],
+        "guidance": SYSTEM_PROMPT
+    })
+    
+    # Process responses and populate state
+    if user_responses:
+        # Parse responses and create Goal objects
+        goals_text = user_responses.get("goals", "")
+        if goals_text:
+            goal = Goal(
+                goal_id="goal_1",
+                title=goals_text.split('\n')[0] if goals_text else "User Goal",
+                description=goals_text,
+                frequency="weekly",
+                status="active",
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+                priority=1
+            )
+            state["goals"] = [goal]
+        
+        # Store personal characteristics
+        state["personal_characteristics"] = {
+            "strengths": user_responses.get("strengths", ""),
+            "challenges": user_responses.get("challenges", ""),
+            "peak_hours": user_responses.get("peak_hours", ""),
+            "daily_hours": user_responses.get("daily_hours", ""),
+        }
+        
+        state["user_name"] = user_responses.get("name", "User")
+        state["current_input"] = f"Profile setup complete: {user_responses.get('goals', '')}"
+    
+    state["action_taken"] = "user_profile_collected"
+    state["last_sync_with_db"] = datetime.now().isoformat()
+    
+    print(f"✅ User Profile Updated with responses")
+    
+    return state
 
 
 def user_input_node(state: TimeManagementState) -> TimeManagementState:
@@ -99,19 +161,22 @@ IMPORTANT:
         state["reasoning"] = parsed.get("explanation", "")
         state["next_step"] = "execute_sql"
         state["action_taken"] = "classified_intent"
-        state["sql_query"] = parsed.get("sql_query", "")
-        state["intent"] = parsed.get("intent", "select")
         
-        return state
-        
+        # Store the SQL query in a custom field for the next node
+        return {
+            **state,
+            "sql_query": parsed.get("sql_query", ""),
+            "intent": parsed.get("intent", "select"),
+        }
     except json.JSONDecodeError:
         print(f"❌ Failed to parse LLM response")
         state["action_taken"] = "failed_to_parse_intent"
         state["next_step"] = "handle_error"
-        state["sql_query"] = ""
-        state["intent"] = "error"
-        
-        return state
+        return {
+            **state,
+            "sql_query": "",
+            "intent": "error",
+        }
 
 
 def execute_sql_node(state: TimeManagementState) -> TimeManagementState:
@@ -135,8 +200,7 @@ def execute_sql_node(state: TimeManagementState) -> TimeManagementState:
     state["last_sync_with_db"] = datetime.now().isoformat()
     
     # This will store result from MCP call
-    # For now, simulate a successful execution
-    state["sql_result"] = f"✅ SQL executed: {sql_query[:50]}..."
+    state["sql_result"] = "PLACEHOLDER_RESULT"
     
     return state
 

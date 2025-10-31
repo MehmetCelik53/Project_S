@@ -7,6 +7,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from .state_schemas import TimeManagementState, create_initial_state
 from .sql_nodes import (
+    user_profile_node,
     user_input_node,
     classify_intent_node,
     execute_sql_node,
@@ -19,19 +20,21 @@ def create_sql_agent_workflow():
     Create the SQL Agent workflow graph.
     
     Flow:
-    START -> user_input -> classify_intent -> execute_sql -> generate_response -> END
+    START -> user_profile -> user_input -> classify_intent -> execute_sql -> generate_response -> END
     """
     
     workflow = StateGraph(TimeManagementState)
     
     # Add nodes
+    workflow.add_node("user_profile", user_profile_node)
     workflow.add_node("user_input", user_input_node)
     workflow.add_node("classify_intent", classify_intent_node)
     workflow.add_node("execute_sql", execute_sql_node)
     workflow.add_node("generate_response", generate_response_node)
     
     # Add edges (linear flow)
-    workflow.add_edge(START, "user_input")
+    workflow.add_edge(START, "user_profile")
+    workflow.add_edge("user_profile", "user_input")
     workflow.add_edge("user_input", "classify_intent")
     workflow.add_edge("classify_intent", "execute_sql")
     workflow.add_edge("execute_sql", "generate_response")

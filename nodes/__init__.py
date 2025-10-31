@@ -14,6 +14,7 @@ from .state_schemas import (
 )
 
 from .sql_nodes import (
+    user_profile_node,
     user_input_node,
     classify_intent_node,
     execute_sql_node,
@@ -33,6 +34,7 @@ __all__ = [
     "PlanStatus",
     "create_initial_state",
     # Nodes
+    "user_profile_node",
     "user_input_node",
     "classify_intent_node",
     "execute_sql_node",
