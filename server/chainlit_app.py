@@ -1,6 +1,6 @@
 """
 Chainlit SQL Agent Interface
-Integrates LangGraph workflow with Chainlit UI and MCP tools
+Simplified integration with MCP tools
 """
 
 import json
@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, '.')
 from nodes.workflow import sql_agent
 from nodes.state_schemas import create_initial_state
+from nodes.sql_nodes import generate_sql_query
 
 # Local LLM client (OpenAI-compatible API)
 llm_client = AsyncOpenAI(
@@ -30,19 +31,14 @@ server_params = StdioServerParameters(
     env=None,
 )
 
-SYSTEM_PROMPT = """You are a SQLite assistant. Execute commands EXACTLY as requested.
-
-STRICT RULES:
-1. Use available tools (list_databases, switch_database, create_database, query_data)
-2. Do EXACTLY what the user asks
-3. Keep responses SHORT
-4. When in doubt, use list_databases() first
+SYSTEM_PROMPT = """You are a SQLite assistant. When the user asks to execute a query, use the query_data tool.
+Always respond with tool calls, not just text.
 """
 
 
 @cl.on_chat_start
 async def start():
-    """Initialize MCP session and workflow state when chat starts"""
+    """Initialize MCP session and workflow state"""
     try:
         # Initialize MCP server connection
         stdio_ctx = stdio_client(server_params)
@@ -52,73 +48,97 @@ async def start():
         session = await session_ctx.__aenter__()
         await session.initialize()
         
-        # Store session in user session
+        # Store in session
         cl.user_session.set("mcp_session", session)
         cl.user_session.set("stdio_ctx", stdio_ctx)
         cl.user_session.set("session_ctx", session_ctx)
         
-        # Initialize workflow state
+        # Initialize state
         initial_state = create_initial_state(
             user_id=cl.user_session.get("id", "user_1"),
             user_name="SQL User",
             db_path="./databases/sql_agent.db"
         )
+        initial_state["personal_characteristics"] = {
+            "strengths": "",
+            "challenges": "",
+            "peak_hours": "",
+            "daily_hours": "",
+        }
+        
         cl.user_session.set("workflow_state", initial_state)
+        cl.user_session.set("profile_collected", False)
+        
+        # Collect profile
+        await cl.Message(
+            content="**Welcome to SQL Agent!** 👋\n\nLet me ask you a few questions:"
+        ).send()
+        
+        profile_data = {}
+        questions = [
+            ("What are your main goals?", "goals"),
+            ("What are your key strengths?", "strengths"),
+            ("What challenges do you face?", "challenges"),
+            ("When are you most productive?", "peak_hours"),
+            ("How many hours daily?", "daily_hours"),
+        ]
+        
+        for question, field in questions:
+            response = await cl.AskUserMessage(
+                content=question,
+                timeout=300
+            ).send()
+            if response:
+                profile_data[field] = response["content"]
+        
+        # Update state
+        initial_state["personal_characteristics"] = profile_data
+        cl.user_session.set("workflow_state", initial_state)
+        cl.user_session.set("profile_collected", True)
         
         await cl.Message(
-            content="**SQL Agent Ready!** 🚀\n\nI'm ready to help you with SQL queries. Ask me anything about your database!"
+            content="✅ **Ready!** Ask me SQL questions."
         ).send()
         
     except Exception as e:
         await cl.Message(
-            content=f"⚠️ Error starting: {str(e)}\n\nMake sure MCP server is running: `python server/mcp_server.py`"
+            content=f"❌ Error: {str(e)}"
         ).send()
 
 
 @cl.on_message
 async def main(message: cl.Message):
-    """Handle incoming user messages and run workflow"""
+    """Handle user messages"""
     
-    # Get workflow state and MCP session
     workflow_state = cl.user_session.get("workflow_state")
     session: ClientSession = cl.user_session.get("mcp_session")
+    profile_collected = cl.user_session.get("profile_collected", False)
     
     if not workflow_state or not session:
-        await cl.Message(
-            content="❌ Session not initialized. Please refresh the page."
-        ).send()
+        await cl.Message(content="❌ Session not initialized.").send()
+        return
+    
+    if not profile_collected:
+        await cl.Message(content="⏳ Complete profile setup first.").send()
         return
     
     try:
-        # Update state with user input
-        workflow_state["current_input"] = message.content
+        # Generate SQL
+        user_input = message.content
+        profile = workflow_state.get("personal_characteristics", {})
         
-        # Show thinking message
-        thinking_msg = cl.Message(content="🤔 Processing your request...")
-        await thinking_msg.send()
+        sql_query = generate_sql_query(user_input, profile)
         
-        # Run the workflow through classify_intent to generate SQL
-        result_state = sql_agent.invoke(
-            workflow_state,
-            config={"configurable": {"thread_id": "default"}}
-        )
-        
-        # Get the SQL query from workflow
-        sql_query = result_state.get("sql_query", "")
-        
-        if not sql_query:
-            await cl.Message(
-                content="❌ Failed to generate SQL query from your request."
-            ).send()
+        if not sql_query or sql_query == "":
+            await cl.Message(content="❌ Failed to generate SQL.").send()
             return
         
-        # Show the SQL query
+        # Show SQL
         await cl.Message(
-            content=f"📝 **SQL Query:**\n```sql\n{sql_query}\n```",
-            author="Workflow"
+            content=f"📝 **SQL:**\n```sql\n{sql_query}\n```"
         ).send()
         
-        # Get available MCP tools
+        # Get MCP tools
         tools_response = await session.list_tools()
         available_tools = [
             {
@@ -132,12 +152,12 @@ async def main(message: cl.Message):
             for tool in tools_response.tools
         ]
         
-        # Call LLM with tools to execute the SQL
+        # Call LLM with tools
         llm_response = await llm_client.chat.completions.create(
             model="gpt-oss:20b",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Execute this SQL query: {sql_query}"}
+                {"role": "user", "content": f"Execute this SQL: {sql_query}"}
             ],
             tools=available_tools,
             tool_choice="auto",
@@ -145,60 +165,47 @@ async def main(message: cl.Message):
         
         assistant_message = llm_response.choices[0].message
         
-        # Handle tool calls from LLM
+        # Execute tool calls
         if assistant_message.tool_calls:
             for tool_call in assistant_message.tool_calls:
                 tool_name = tool_call.function.name
                 tool_args = json.loads(tool_call.function.arguments)
                 
-                # Execute tool via MCP
                 result = await session.call_tool(tool_name, tool_args)
-                tool_result = getattr(result.content[0], "text", "")
                 
-                # Store result in workflow state
-                result_state["sql_result"] = tool_result
+                # Get result content
+                result_text = ""
+                if result.content:
+                    content_item = result.content[0]
+                    if hasattr(content_item, "text"):
+                        result_text = content_item.text
+                    else:
+                        result_text = str(content_item)
                 
-                # Show result
                 await cl.Message(
-                    content=f"💾 **Result:**\n```\n{tool_result}\n```",
-                    author="Database"
+                    content=f"💾 **Result:**\n```\n{result_text}\n```"
+                ).send()
+        else:
+            if assistant_message.content:
+                await cl.Message(
+                    content=f"✅ {assistant_message.content}"
                 ).send()
         
-        # Run final node to generate friendly response
-        final_state = sql_agent.invoke(
-            result_state,
-            config={"configurable": {"thread_id": "default"}}
-        )
-        
-        # Get the generated response from messages
-        final_messages = final_state.get("messages", [])
-        if final_messages:
-            last_response = final_messages[-1].get("content", "Query completed.")
-            await cl.Message(
-                content=f"✅ **Response:**\n{last_response}",
-                author="Assistant"
-            ).send()
-        
-        # Update session state
-        cl.user_session.set("workflow_state", final_state)
-        
     except Exception as e:
-        await cl.Message(
-            content=f"❌ Error: {str(e)}"
-        ).send()
+        await cl.Message(content=f"❌ Error: {str(e)}").send()
 
 
 @cl.on_chat_end
 async def end():
-    """Cleanup when chat ends"""
+    """Cleanup"""
     try:
-        session: ClientSession = cl.user_session.get("mcp_session")
+        session = cl.user_session.get("mcp_session")
         session_ctx = cl.user_session.get("session_ctx")
         stdio_ctx = cl.user_session.get("stdio_ctx")
         
-        if session and session_ctx:
+        if session_ctx:
             await session_ctx.__aexit__(None, None, None)
         if stdio_ctx:
             await stdio_ctx.__aexit__(None, None, None)
     except Exception as e:
-        print(f"Error during cleanup: {e}")
+        print(f"Cleanup error: {e}")
